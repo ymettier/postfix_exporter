@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -235,7 +237,7 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					"Mar 16 23:30:44 123-mail postfix/qmgr[29980]: warning: lots of deferred mail, that is bad for performance",
 				},
 				unsupportedLogEntries: []string{
-					`label:{name:"level"  value:"warning"}  label:{name:"service"  value:"qmgr"}  counter:{value:2}`,
+					`{level="warning",service="qmgr"} counter(2)`,
 				},
 			},
 			fields: fields{
@@ -249,7 +251,7 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					"Mar 16 12:28:02 123-mail postfix/smtpd[16268]: fatal: file /etc/postfix/main.cf: parameter default_privs: unknown user name value: nobody",
 				},
 				unsupportedLogEntries: []string{
-					`label:{name:"level"  value:"fatal"}  label:{name:"service"  value:"smtpd"}  counter:{value:1}`,
+					`{level="fatal",service="smtpd"} counter(1)`,
 				},
 			},
 			fields: fields{
@@ -263,7 +265,7 @@ func TestPostfixExporter_CollectFromLogline(t *testing.T) {
 					"Feb 14 19:05:25 123-mail postfix/smtpd[1517]: table hash:/etc/postfix/virtual_mailbox_maps(0,lock|fold_fix) has changed -- restarting",
 				},
 				unsupportedLogEntries: []string{
-					`label:{name:"level"  value:""}  label:{name:"service"  value:"smtpd"}  counter:{value:1}`,
+					`{level="",service="smtpd"} counter(1)`,
 				},
 			},
 			fields: fields{
@@ -363,10 +365,39 @@ func assertVecMetricsEquals(t *testing.T, counter *prometheus.CounterVec, expect
 		}()
 		var res []string
 		for metric := range metricsChan {
-			metricDto := io_prometheus_client.Metric{}
-			metric.Write(&metricDto)
-			res = append(res, metricDto.String())
+			str, _ := metricToString(metric)
+			res = append(res, str)
 		}
 		assert.Equal(t, expected, res, message)
 	}
+}
+func metricToString(metric prometheus.Metric) (string, error) {
+	m := &io_prometheus_client.Metric{}
+	if err := metric.Write(m); err != nil {
+		return "", err
+	}
+	var labelPairs []string
+	for _, lp := range m.GetLabel() {
+		labelPairs = append(labelPairs, fmt.Sprintf(`%s="%s"`, lp.GetName(), lp.GetValue()))
+	}
+	labels := ""
+	if len(labelPairs) > 0 {
+		labels = "{" + strings.Join(labelPairs, ",") + "}"
+	}
+	var value float64
+	var valueType string
+	switch {
+	case m.GetCounter() != nil:
+		value = m.GetCounter().GetValue()
+		valueType = "counter"
+	case m.GetGauge() != nil:
+		value = m.GetGauge().GetValue()
+		valueType = "gauge"
+	case m.GetUntyped() != nil:
+		value = m.GetUntyped().GetValue()
+		valueType = "untyped"
+	default:
+		return "", fmt.Errorf("unsupported metric type")
+	}
+	return fmt.Sprintf("%s %s(%v)", labels, valueType, value), nil
 }
